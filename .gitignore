@@ -3,4 +3,5 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .ipynb_checkpoints/
-retail.db
+retail_analytics.db
+.env

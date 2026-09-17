@@ -1,59 +1,134 @@
-# SQL Retail Analytics
+# SQL Retail Analytics — Australian Supermarket Sector
 
-A SQL-first analysis of a synthetic retail dataset — 600 customers, ~3,200 completed
-orders, 20 products across 5 categories, spanning Jan 2023–Jun 2025. Built to demonstrate
-real analyst SQL (CTEs, window functions, cohort analysis) rather than just `pandas.groupby`.
+A SQL-first data engineering project modeling a synthetic Australian
+supermarket dataset — customers, stores, and products across Woolworths
+Group and Coles Group banners in NSW, VIC, QLD, and SA — with advanced
+window-function analytics for churn risk, cohort retention, and rolling
+regional revenue.
 
 ## What's here
 
-- **`schema.sql`** — normalized relational schema: `customers` → `orders` → `order_items` ← `products` → `categories`.
-- **`generate_data.py`** — deterministic (seeded) synthetic data generator with built-in seasonality, repeat-customer loyalty variance, and a churn tail, so the analysis has something real to say.
-- **`queries/`** — five standalone `.sql` files, each answering one business question. Every query is written to be read and run independently of the notebook:
-  1. `01_monthly_revenue_trend.sql` — revenue trend with month-over-month growth (`LAG()`)
-  2. `02_top_customers_ltv.sql` — top customers by lifetime value (`DENSE_RANK()`)
-  3. `03_product_rank_within_category.sql` — product ranking within category (`RANK() PARTITION BY`, window `SUM()`)
-  4. `04_signup_cohort_retention.sql` — signup-month cohort retention analysis
-  5. `05_churn_risk.sql` — customers whose order gap exceeds 2x their own historical average (`LAG()` + aggregation)
-- **`analysis.ipynb`** — runs each query, visualizes the results (matplotlib/seaborn), and writes up the finding for each one. Outputs are committed, so it's readable directly on GitHub without running anything.
-- **`tests/test_data_integrity.py`** — pytest suite checking referential integrity, value ranges, and that every analysis query executes and returns rows.
+| File | Purpose |
+|---|---|
+| `schema.sql` | PostgreSQL DDL for `customers`, `stores`, `products`, `transactions`, with FK constraints and indexes. |
+| `data_generator.py` | Seeds ~1,500 customers, 45 stores, and 10,000 transaction records using `pandas` + `Faker`. Runs against PostgreSQL or a local SQLite file. |
+| `queries.sql` | Three window-function analyses: churn risk scoring, cohort retention matrix, 30-day rolling revenue/basket size. |
+| `test_integrity.py` | `pytest` suite: NULL checks, positive-value checks, referential integrity, domain sanity checks. |
+| `requirements.txt` | Python dependencies. |
 
-## Key findings (see `analysis.ipynb` for the full write-up)
+## Data model
 
-- Revenue is choppy early, then compounds, with a visible Nov/Dec seasonal bump.
-- The top 20 customers (of 600) account for a disproportionate share of revenue — a long-tail pattern that would justify a VIP retention play in a real business.
-- Category-leading products take a noticeably larger revenue share than the rest of their category's lineup.
-- Retention drops off sharply after a customer's signup month — converting first-time to second-time buyers is the highest-leverage lever here, not just acquisition.
-- A gap-ratio churn rule (current gap vs. a customer's own historical average) surfaces a more personalized at-risk list than a flat days-since-last-order cutoff.
+```text
+customers ──┐
+            ├──< transactions >──┐
+stores ─────┘                    │
+                              products
+```
 
-## Running it
+- **customers** — name, contact, AU state/postcode, loyalty program (`Everyday Rewards` / `Flybuys` / `None`), signup date.
+- **stores** — banner (`Woolworths`, `Woolworths Metro`, `Coles`, `Coles Local`), parent group, suburb/state/postcode.
+- **products** — 60+ SKUs across 13 realistic supermarket categories (Fresh Produce, Dairy & Eggs, Bakery, Liquor, etc.) with real AU brand names.
+- **transactions** — one row per product purchased by a customer, at a store, on a given date (line-item grain).
+
+## Local setup
+
+### 1. Install dependencies
 
 ```bash
 python -m venv .venv
-.venv\Scripts\Activate.ps1          # or source .venv/bin/activate on macOS/Linux
+.venv\Scripts\Activate.ps1          # Windows PowerShell
+# source .venv/bin/activate         # macOS/Linux
+
 pip install -r requirements.txt
-
-python generate_data.py             # creates retail.db
-python -m pytest tests/ -v          # data integrity checks
-
-jupyter notebook analysis.ipynb     # or: jupyter nbconvert --to notebook --execute --inplace analysis.ipynb
 ```
 
-## Project structure
+### 2. Choose a database
 
-```text
-sql-retail-analytics/
-|-- schema.sql
-|-- generate_data.py
-|-- analysis.ipynb
-|-- requirements.txt
-|-- queries/
-|   |-- 01_monthly_revenue_trend.sql
-|   |-- 02_top_customers_ltv.sql
-|   |-- 03_product_rank_within_category.sql
-|   |-- 04_signup_cohort_retention.sql
-|   `-- 05_churn_risk.sql
-|-- scripts/
-|   `-- build_notebook.py   # regenerates analysis.ipynb from its cell definitions
-`-- tests/
-    `-- test_data_integrity.py
+**Option A — SQLite (zero config, default)**
+Nothing to set up. The generator will create `retail_analytics.db` in this
+folder on first run.
+
+**Option B — PostgreSQL**
+
+```bash
+createdb retail_analytics
+
+# Point the scripts at it, either via env var...
+export DATABASE_URL="postgresql+psycopg2://<user>:<password>@localhost:5432/retail_analytics"
+# ...or pass --db-url explicitly to each script (see below).
 ```
+
+`data_generator.py` creates the schema itself (it runs `schema.sql` for
+Postgres, or an equivalent SQLite-flavored DDL for SQLite) — you don't need
+to run `schema.sql` manually, though you can if you just want to inspect or
+apply the DDL on its own:
+
+```bash
+psql -d retail_analytics -f schema.sql
+```
+
+### 3. Generate the dataset
+
+```bash
+python data_generator.py
+# or, customized:
+python data_generator.py --db-url postgresql+psycopg2://user:pass@localhost:5432/retail_analytics \
+                          --customers 2000 --stores 50 --transactions 15000 --seed 42
+```
+
+This prints row counts and total revenue on completion.
+
+### 4. Run the analytics queries
+
+**PostgreSQL:**
+
+```bash
+psql -d retail_analytics -f queries.sql
+```
+
+**SQLite** (note: `queries.sql` uses Postgres-specific syntax — `DATE_TRUNC`,
+`generate_series`, `LATERAL` — so for a quick look at the SQLite file, open
+it with a GUI tool like DB Browser for SQLite, or adapt the date functions,
+or point `data_generator.py --db-url` at a real Postgres instance instead):
+
+```bash
+sqlite3 retail_analytics.db
+```
+
+### 5. Run the data quality tests
+
+```bash
+pytest test_integrity.py -v
+```
+
+By default the tests connect to the same database as the generator
+(`$DATABASE_URL`, or the local SQLite file). Set `DATABASE_URL` before
+running if you seeded a Postgres database instead.
+
+## The three analyses (`queries.sql`)
+
+1. **Customer Churn Risk Scoring** — `NTILE(4)` to isolate the top spending
+   quartile, `RANK()` for lifetime-value ordering, and a days-since-last-purchase
+   flag (`Low` / `High` / `Critical`) for anyone in that quartile who hasn't
+   transacted in 60+ days.
+2. **Cohort Retention Matrix** — groups customers by signup month, then uses
+   `COUNT() OVER (PARTITION BY ...)` to size each cohort and tracks month-by-month
+   retention percentage relative to month 0.
+3. **30-Day Rolling Revenue & Average Basket Size per Region** — builds a full
+   calendar spine per state (via `generate_series`) so gap days don't distort
+   the window, then computes 7-day/30-day rolling revenue and average basket
+   size with `SUM() OVER (... ROWS BETWEEN 29 PRECEDING AND CURRENT ROW)` and
+   day-over-day change via `LAG()`.
+
+## Notes & assumptions
+
+- The dataset is synthetic and randomly generated (seeded, so re-running
+  `data_generator.py` with the same `--seed` reproduces the same data). It is
+  not real Woolworths or Coles transaction data.
+- The schema has no separate order/basket header table — each `transactions`
+  row is one product purchase event. "Average basket size" in `queries.sql`
+  is therefore approximated as the average transaction row value, noted
+  inline in the query comments.
+- Store locations are generated across NSW, VIC, QLD, and SA per the project
+  brief; the `state` CHECK constraints allow all Australian states/territories
+  for schema completeness.
